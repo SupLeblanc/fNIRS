@@ -1,0 +1,100 @@
+"""
+Created on Fri Apr  2 21:19:48 2021
+
+@author: SupLeblanc
+
+此程序用于对nirs类型的数据进行预处理
+注意：
+①要先下载nirsiple包才能正常运行此程序
+②此程序提供了两种去噪方式方法
+③改进：运动伪迹分析及去除
+④拓展：考虑怎样对其它类型的数据进行处理
+"""
+
+import numpy as np
+import scipy.io
+import nirsimple as ns
+import mne
+
+'''导入nirs类型数据并显示数据大小'''
+simple_probe = scipy.io.loadmat('D:/test.nirs') #处理数据时注意替换路径
+intensities = np.swapaxes(simple_probe['d'], 0, 1)
+print("Intensity data shape: {}".format(intensities.shape))
+print("  number of channels: {}".format(intensities.shape[0]))
+print("  number of time points: {}".format(intensities.shape[1]))
+
+'''将光强转换为光强变化量'''
+dod = ns.intensities_to_od_changes(intensities)
+print("Delta OD shape: {}".format(dod.shape))
+
+'''去除基线偏移与尖峰伪影（对od进行处理，再转化为dod，但由于无法直接载入nirs类型的数据，在这里并不适用）
+raw_intensity = mne.io.read_raw_nirx('path', verbose=True)
+raw_intensity.load_data().resample(3, npad="auto")
+raw_od = optical_density(raw_intensity)
+raw_od=mne.preprocessing.nirs.optical_density(intensities)
+corrected_tddr = temporal_derivative_distribution_repair(raw_od)
+corrected_tddr.plot(n_channels=15, duration=400, show_scrollbars=False)
+'''
+
+'''得到通道名称'''
+channels = simple_probe['SD']['MeasList'][0, 0][:, :2].tolist()
+raw_ch_names = [str(ch).replace('[', '').replace(']', '').replace(', ', '-')
+                for ch in channels]
+print("Channel names: {}".format(raw_ch_names))
+
+'''得到通道波长'''
+wavelengths = simple_probe['SD']['Lambda'][0, 0][0].tolist()
+ch_high_wl = [wavelengths[0] for _ in range(int(len(raw_ch_names)/2))]
+ch_low_wl = [wavelengths[1] for _ in range(int(len(raw_ch_names)/2))]
+ch_wl = ch_high_wl + ch_low_wl
+print("Channel wavelengths: {}".format(ch_wl))
+
+'''定义DPF'''
+unique_dpf = 6
+ch_dpf = [unique_dpf for _ in enumerate(raw_ch_names)]
+print("Channel DPFs: {}".format(ch_dpf))
+
+'''定义探测器距离'''
+unique_distance = 2.8  # cm
+ch_distances = [unique_distance for _ in enumerate(raw_ch_names)]
+print("Channel distances: {}".format(ch_distances))
+
+'''将光强信号转换为▲HbO和▲HbR'''
+data = ns.mbll(dod, raw_ch_names, ch_wl, ch_dpf, ch_distances,
+               unit='cm', table='wray')
+dc, ch_names, ch_types = data
+print("Delta HbO and HbR shape: {}".format(dc.shape))
+print("Channel names: {}".format(ch_names))
+print("Channel types: {}".format(ch_types))
+
+'''画出▲HbO和▲HbR随时间变化的图像'''
+S_FREQ = 5  # sampling frequency in Hz
+mne_ch_names = [ch + ' ' + ch_types[i] for i, ch in enumerate(ch_names)]
+print("MNE channel names: {}".format(mne_ch_names))
+info = mne.create_info(ch_names=mne_ch_names, sfreq=S_FREQ,
+                       ch_types=ch_types)
+raw = mne.io.RawArray(dc, info)
+graph = raw.plot(scalings=0.5e-6, duration=50)
+
+'''用带通滤波器去除因心率活动带来的影响'''
+fig = raw.plot_psd(average=True)
+fig.suptitle('Before filtering', weight='bold', size='x-large')
+fig.subplots_adjust(top=0.88)
+raw = raw.filter(0.01, 0.2)
+fig = raw.plot_psd(average=True)
+fig.suptitle('After filtering', weight='bold', size='x-large')
+fig.subplots_adjust(top=0.88)
+
+''''用cbsi修正数据并画图'''
+data = ns.cbsi(dc, ch_names, ch_types)
+dc_0, ch_names_0, ch_types_0 = data
+print("Delta HbO_0 and HbR_0 shape: {}".format(dc_0.shape))
+print(ch_names_0)
+
+mne_ch_names_0 = [ch + ' ' + ch_types_0[i] + '_0'
+                  for i, ch in enumerate(ch_names_0)]
+print("MNE channel names: {}".format(mne_ch_names_0))
+info_0 = mne.create_info(ch_names=mne_ch_names_0, sfreq=S_FREQ,
+                         ch_types=ch_types_0)
+raw_0 = mne.io.RawArray(dc_0, info_0)
+graph_0 = raw_0.plot(scalings=0.5e-6, duration=50)
